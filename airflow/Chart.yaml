@@ -1,5 +1,5 @@
 apiVersion: v2
-appVersion: 2.1.2
+appVersion: 2.6.3
 dependencies:
 - condition: postgresql.enabled
   name: postgresql
@@ -9,10 +9,10 @@ dependencies:
   name: redis
   repository: https://charts.helm.sh/stable
   version: 10.5.7
-description: Airflow Helm Chart (User Community) - used to deploy Apache Airflow on
-  Kubernetes
-home: https://github.com/airflow-helm/charts
-icon: https://airflow.apache.org/_images/pin_large.png
+description: Airflow Helm Chart (User Community) - the standard way to deploy Apache
+  Airflow on Kubernetes with Helm
+home: https://github.com/airflow-helm/charts/tree/main/charts/airflow
+icon: https://avatars.githubusercontent.com/u/71061241
 keywords:
 - airflow
 - dag
@@ -20,9 +20,7 @@ keywords:
 maintainers:
 - name: thesuperzapper
   url: https://github.com/thesuperzapper
-- name: gsemet
-  url: https://github.com/gsemet
 name: airflow
 sources:
 - https://github.com/airflow-helm/charts/tree/main/charts/airflow
-version: 8.5.2
+version: 8.8.0

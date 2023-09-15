@@ -25,6 +25,9 @@ spec:
       secretName: {{ .Values.ingress.flower.tls.secretName }}
       {{- end }}
   {{- end }}
+  {{- if .Values.ingress.flower.ingressClassName }}
+  ingressClassName: {{ .Values.ingress.flower.ingressClassName }}
+  {{- end }}
   rules:
     - host: {{ .Values.ingress.flower.host }}
       http:
@@ -36,7 +39,11 @@ spec:
               service:
                 name: {{ .serviceName }}
                 port:
+                  {{- if kindIs "string" .servicePort }}
+                  name: {{ .servicePort }}
+                  {{- else }}
                   number: {{ .servicePort }}
+                  {{- end }}
           {{- end }}
           - path: {{ .Values.ingress.flower.path }}
             pathType: ImplementationSpecific
@@ -52,6 +59,10 @@ spec:
               service:
                 name: {{ .serviceName }}
                 port:
+                  {{- if kindIs "string" .servicePort }}
+                  name: {{ .servicePort }}
+                  {{- else }}
                   number: {{ .servicePort }}
+                  {{- end }}
           {{- end }}
 {{- end }}

@@ -10,7 +10,7 @@ airflow:
   ##
   image:
     repository: apache/airflow
-    tag: 2.1.2-python3.8
+    tag: 2.6.3-python3.9
     pullPolicy: IfNotPresent
     pullSecret: ""
     uid: 50000
@@ -20,7 +20,7 @@ airflow:
   ## - allowed values: "CeleryExecutor", "KubernetesExecutor", "CeleryKubernetesExecutor"
   ## - customize the "KubernetesExecutor" pod-template with `airflow.kubernetesPodTemplate.*`
   ##
-  executor: KubernetesExecutor
+  executor: CeleryExecutor
 
   ## the fernet encryption key (sets `AIRFLOW__CORE__FERNET_KEY`)
   ## - [WARNING] you must change this value to ensure the security of your airflow
@@ -67,6 +67,7 @@ airflow:
   ## - templates can ONLY be used in: `password`, `email`, `firstName`, `lastName`
   ## - templates used a bash-like syntax: ${MY_USERNAME}, $MY_USERNAME
   ## - templates are defined in `usersTemplates`
+  ## - `role` can be a single role or a list of roles
   ##
   users:
     - username: admin
@@ -159,8 +160,18 @@ airflow:
   ##       description: "example pool with 5 slots"
   ##       slots: 5
   ##     - name: "pool_2"
-  ##       description: "example pool with 10 slots"
-  ##       slots: 10
+  ##       description: "example pool with 2 cron policies"
+  ##       slots: 0
+  ##       ## if deferred tasks count towards the slot limit, requires airflow 2.7.0+ (default: false)
+  ##       include_deferred: false
+  ##       ## at each sync interval, the policy with the most recently past `recurrence` is applied
+  ##       policies:
+  ##         - name: "scale up at 7pm UTC"
+  ##           slots: 50
+  ##           recurrence: "0 19 * * *"
+  ##         - name: "scale down at 6am UTC"
+  ##           slots: 10
+  ##           recurrence: "0 6 * * *"
   ##
   pools: []
 
@@ -208,6 +219,12 @@ airflow:
   ##
   extraPipPackages: []
 
+  ## pip packages that are protected from upgrade/downgrade by `extraPipPackages`
+  ## - [WARNING] Pods will fail to start if `extraPipPackages` would cause these packages to change versions
+  ##
+  protectedPipPackages:
+    - "apache-airflow"
+
   ## extra environment variables for the airflow Pods
   ## - spec for EnvVar:
   ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#envvar-v1-core
@@ -231,6 +248,14 @@ airflow:
   ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#volume-v1-core
   ##
   extraVolumes: []
+
+  ## kubernetes cluster domain name
+  ## - configured in the kubelet with `--cluster-domain` flag (deprecated):
+  ##   https://kubernetes.io/docs/reference/command-line-tools-reference/kubelet/
+  ## - or configured in the kubelet with configuration file `clusterDomain` option:
+  ##   https://kubernetes.io/docs/tasks/administer-cluster/kubelet-config-file/
+  ##
+  clusterDomain: "cluster.local"
 
   ########################################
   ## FILE | airflow_local_settings.py
@@ -299,7 +324,12 @@ airflow:
     ##
     tolerations: []
 
+    ## labels for the Pod template
+    ##
+    podLabels: {}
+
     ## annotations for the Pod template
+    ##
     podAnnotations: {}
 
     ## the security context for the Pod template
@@ -308,6 +338,12 @@ airflow:
     ##
     securityContext: {}
 
+    ## the shareProcessNamespace config for the Pod template
+    ## - docs for shareProcessNamespace:
+    ##   https://kubernetes.io/docs/tasks/configure-pod-container/share-process-namespace/
+    ##
+    shareProcessNamespace: false
+
     ## extra pip packages to install in the Pod template
     ##
     ## ____ EXAMPLE _______________
@@ -315,6 +351,18 @@ airflow:
     ##     - "SomeProject==1.0.0"
     ##
     extraPipPackages: []
+
+    ## extra containers for the pod template
+    ## - spec for Container:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#container-v1-core
+    ##
+    extraContainers: []
+
+    ## extra init-containers for the Pod template
+    ## - spec of Container:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#container-v1-core
+    ##
+    extraInitContainers: []
 
     ## extra VolumeMounts for the Pod template
     ## - spec for VolumeMount:
@@ -374,6 +422,10 @@ airflow:
     ##
     securityContext: {}
 
+    ## Labels for the db-migrations Deployment
+    ##
+    labels: {}
+
     ## Pod labels for the db-migrations Deployment
     ##
     podLabels: {}
@@ -430,6 +482,10 @@ airflow:
     ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#podsecuritycontext-v1-core
     ##
     securityContext: {}
+
+    ## Labels for the sync Deployments/Jobs
+    ##
+    labels: {}
 
     ## Pod labels for the sync Deployments/Jobs
     ##
@@ -513,6 +569,12 @@ scheduler:
     ##
     enabled: false
 
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
+
     ## the maximum unavailable pods/percentage for the scheduler
     ##
     maxUnavailable: ""
@@ -521,19 +583,67 @@ scheduler:
     ##
     minAvailable: ""
 
+  ## configs for the log-cleanup sidecar of the scheduler
+  ## - helps prevent excessive log buildup by regularly deleting old files
+  ##
+  logCleanup:
+    ## if the log-cleanup sidecar is enabled
+    ## - [WARNING] must be disabled if `logs.persistence.enabled` is `true`
+    ##
+    enabled: true
+
+    ## resource requests/limits for the log-cleanup container
+    ## - spec of ResourceRequirements:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#resourcerequirements-v1-core
+    ##
+    resources: {}
+
+    ## the number of minutes to retain log files (by last-modified time)
+    ##
+    retentionMinutes: 21600
+
+    ## the number of seconds between each check for files to delete
+    ##
+    intervalSeconds: 900
+
   ## sets `airflow --num_runs` parameter used to run the airflow scheduler
   ##
   numRuns: -1
 
   ## configs for the scheduler Pods' liveness probe
-  ## - `periodSeconds` x `failureThreshold` = max seconds a scheduler can be unhealthy
+  ## - "unhealthy" means the SchedulerJob has not had a heartbeat for
+  ##   AIRFLOW__SCHEDULER__SCHEDULER_HEALTH_CHECK_THRESHOLD seconds
+  ## - `periodSeconds` x `failureThreshold` = max seconds a scheduler can be in an "unhealthy" state
   ##
   livenessProbe:
     enabled: true
     initialDelaySeconds: 10
     periodSeconds: 30
-    timeoutSeconds: 10
+    timeoutSeconds: 60
     failureThreshold: 5
+
+    ## configs for an additional check that ensures tasks are being created by the scheduler
+    ## - this check works by ensuring that the most recent LocalTaskJob had a `start_date` no more than
+    ##   `taskCreationCheck.thresholdSeconds` seconds ago
+    ## - this check is useful because the scheduler can deadlock with a heartbeat, but not be scheduling new tasks:
+    ##   https://github.com/apache/airflow/issues/7935 - patched in airflow `2.0.2`
+    ##   https://github.com/apache/airflow/issues/15938 - patched in airflow `2.1.1`
+    ##
+    taskCreationCheck:
+      ## if the task creation check is enabled
+      ##
+      enabled: false
+
+      ## the maximum number of seconds since the start_date of the most recent LocalTaskJob
+      ## - [WARNING] must be AT LEAST equal to your shortest DAG schedule_interval
+      ## - [WARNING] DummyOperator tasks will NOT be seen by this probe
+      ##
+      thresholdSeconds: 300
+
+      ## minimum number of seconds the scheduler must have run before the task creation check begins
+      ## - [WARNING] must be long enough for the scheduler to boot and create a task
+      ##
+      schedulerAgeBeforeCheck: 180
 
   ## extra pip packages to install in the scheduler Pods
   ##
@@ -570,6 +680,11 @@ web:
   ########################################
   ##
   webserverConfig:
+    ## if the `webserver_config.py` file is mounted
+    ## - set to false if you wish to mount your own `webserver_config.py` file
+    ##
+    enabled: true
+
     ## the full content of the `webserver_config.py` file (as a string)
     ## - docs for Flask-AppBuilder security configs:
     ##   https://flask-appbuilder.readthedocs.io/en/latest/security.html
@@ -653,6 +768,12 @@ web:
     ##
     enabled: false
 
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
+
     ## the maximum unavailable pods/percentage for the web Deployment
     ##
     maxUnavailable: ""
@@ -718,7 +839,7 @@ web:
 workers:
   ## if the airflow workers StatefulSet should be deployed
   ##
-  enabled: false
+  enabled: true
 
   ## the number of worker Pods to run
   ## - if you set this >1 we recommend defining a `workers.podDisruptionBudget`
@@ -783,6 +904,12 @@ workers:
     ##
     enabled: false
 
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
+
     ## the maximum unavailable pods/percentage for the worker StatefulSet
     ##
     maxUnavailable: ""
@@ -793,6 +920,7 @@ workers:
 
   ## configs for the HorizontalPodAutoscaler of the worker Pods
   ## - [WARNING] if using git-sync, ensure `dags.gitSync.resources` is set
+  ## - [WARNING] if using worker log-cleanup, ensure `workers.logCleanup.resources` is set
   ##
   ## ____ EXAMPLE _______________
   ##   autoscaling:
@@ -810,6 +938,12 @@ workers:
     enabled: false
     maxReplicas: 2
     metrics: []
+
+    ## the `apiVersion` to use for HorizontalPodAutoscaler resources
+    ## - for Kubernetes 1.23 and later: "autoscaling/v2"
+    ## - for Kubernetes 1.22 and before: "autoscaling/v2beta2"
+    ##
+    apiVersion: autoscaling/v2
 
   ## configs for the celery worker Pods
   ##
@@ -837,6 +971,38 @@ workers:
   ##
   terminationPeriod: 60
 
+  ## configs for the log-cleanup sidecar of the worker Pods
+  ## - helps prevent excessive log buildup by regularly deleting old files
+  ##
+  logCleanup:
+    ## if the log-cleanup sidecar is enabled
+    ## - [WARNING] must be disabled if `logs.persistence.enabled` is `true`
+    ##
+    enabled: true
+
+    ## resource requests/limits for the log-cleanup container
+    ## - spec of ResourceRequirements:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#resourcerequirements-v1-core
+    ##
+    resources: {}
+
+    ## the number of minutes to retain log files (by last-modified time)
+    ##
+    retentionMinutes: 21600
+
+    ## the number of seconds between each check for files to delete
+    ##
+    intervalSeconds: 900
+
+  ## configs for the worker Pods' liveness probe
+  ##
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 60
+    failureThreshold: 5
+
   ## extra pip packages to install in the worker Pod
   ##
   ## ____ EXAMPLE _______________
@@ -858,12 +1024,131 @@ workers:
   extraVolumes: []
 
 ###################################
+## COMPONENT | Triggerer
+###################################
+triggerer:
+  ## if the airflow triggerer should be deployed
+  ## - [WARNING] the triggerer component was added in airflow 2.2.0
+  ## - [WARNING] if `airflow.legacyCommands` is `true` the triggerer will NOT be deployed
+  ##
+  enabled: true
+
+  ## the number of triggerer Pods to run
+  ## - if you set this >1 we recommend defining a `triggerer.podDisruptionBudget`
+  ##
+  replicas: 1
+
+  ## resource requests/limits for the triggerer Pods
+  ## - spec for ResourceRequirements:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#resourcerequirements-v1-core
+  ##
+  resources: {}
+
+  ## the nodeSelector configs for the triggerer Pods
+  ## - docs for nodeSelector:
+  ##   https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+  ##
+  nodeSelector: {}
+
+  ## the affinity configs for the triggerer Pods
+  ## - spec for Affinity:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#affinity-v1-core
+  ##
+  affinity: {}
+
+  ## the toleration configs for the triggerer Pods
+  ## - spec for Toleration:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#toleration-v1-core
+  ##
+  tolerations: []
+
+  ## the security context for the triggerer Pods
+  ## - spec for PodSecurityContext:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#podsecuritycontext-v1-core
+  ##
+  securityContext: {}
+
+  ## labels for the triggerer Deployment
+  ##
+  labels: {}
+
+  ## Pod labels for the triggerer Deployment
+  ##
+  podLabels: {}
+
+  ## annotations for the triggerer Deployment
+  ##
+  annotations: {}
+
+  ## Pod annotations for the triggerer Deployment
+  ##
+  podAnnotations: {}
+
+  ## if we add the annotation: "cluster-autoscaler.kubernetes.io/safe-to-evict" = "true"
+  ##
+  safeToEvict: true
+
+  ## configs for the PodDisruptionBudget of the triggerer Deployment
+  ##
+  podDisruptionBudget:
+    ## if a PodDisruptionBudget resource is created for the triggerer Deployment
+    ##
+    enabled: false
+
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
+
+    ## the maximum unavailable pods/percentage for the triggerer Deployment
+    ##
+    maxUnavailable: ""
+
+    ## the minimum available pods/percentage for the triggerer Deployment
+    ##
+    minAvailable: ""
+
+  ## maximum number of triggers each triggerer will run at once (sets `AIRFLOW__TRIGGERER__DEFAULT_CAPACITY`)
+  ##
+  capacity: 1000
+
+  ## configs for the triggerer Pods' liveness probe
+  ##
+  livenessProbe:
+    enabled: true
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 60
+    failureThreshold: 5
+
+  ## extra pip packages to install in the triggerer Pod
+  ##
+  ## ____ EXAMPLE _______________
+  ##   extraPipPackages:
+  ##     - "SomeProject==1.0.0"
+  ##
+  extraPipPackages: []
+
+  ## extra VolumeMounts for the triggerer Pods
+  ## - spec for VolumeMount:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#volumemount-v1-core
+  ##
+  extraVolumeMounts: []
+
+  ## extra Volumes for the triggerer Pods
+  ## - spec for Volume:
+  ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#volume-v1-core
+  ##
+  extraVolumes: []
+
+###################################
 ## COMPONENT | Flower
 ###################################
 flower:
   ## if the airflow flower UI should be deployed
   ##
-  enabled: false
+  enabled: true
 
   ## the number of flower Pods to run
   ## - if you set this >1 we recommend defining a `flower.podDisruptionBudget`
@@ -926,6 +1211,12 @@ flower:
     ## if a PodDisruptionBudget resource is created for the flower Deployment
     ##
     enabled: false
+
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
 
     ## the maximum unavailable pods/percentage for the flower Deployment
     ##
@@ -1079,8 +1370,8 @@ dags:
     ## the git-sync container image
     ##
     image:
-      repository: k8s.gcr.io/git-sync/git-sync
-      tag: v3.2.2
+      repository: registry.k8s.io/git-sync/git-sync
+      tag: v3.6.5
       pullPolicy: IfNotPresent
       uid: 65533
       gid: 65533
@@ -1128,6 +1419,11 @@ dags:
     ## the max number of seconds allowed for a complete sync
     ##
     syncTimeout: 120
+
+    ## the git submodule behavior
+    ## - allowed values: "recursive", "shallow", "off"
+    ##
+    submodules: recursive
 
     ## the name of a pre-created Secret with git http credentials
     ##
@@ -1203,6 +1499,11 @@ ingress:
     ##
     host: ""
 
+    ## the Ingress Class for the web Ingress
+    ## - [WARNING] requires Kubernetes 1.18 or later, use "kubernetes.io/ingress.class" annotation for older versions
+    ##
+    ingressClassName: ""
+
     ## configs for web Ingress TLS
     ##
     tls:
@@ -1257,6 +1558,11 @@ ingress:
     ## the hostname for the flower Ingress
     ##
     host: ""
+
+    ## the Ingress Class for the flower Ingress
+    ## - [WARNING] requires Kubernetes 1.18 or later, use "kubernetes.io/ingress.class" annotation for older versions
+    ##
+    ingressClassName: ""
 
     ## configs for flower Ingress TLS
     ##
@@ -1335,18 +1641,58 @@ serviceAccount:
 ###################################
 ## CONFIG | Kubernetes Extra Manifests
 ###################################
-## extra Kubernetes manifests to include alongside this chart
-## - this can be used to include ANY Kubernetes YAML resource
+## a list of extra Kubernetes manifests that will be deployed alongside the chart
+## - helm templates within these strings will be rendered
 ##
 ## ____ EXAMPLE _______________
 ##   extraManifests:
-##    - apiVersion: cloud.google.com/v1beta1
-##      kind: BackendConfig
-##      metadata:
-##        name: "{{ .Release.Name }}-test"
-##      spec:
-##        securityPolicy:
-##          name: "gcp-cloud-armor-policy-test"
+##     - |
+##       apiVersion: v1
+##       kind: Secret
+##       metadata:
+##         name: airflow-postgres
+##       data:
+##         postgresql-password: {{ `password1` | b64enc | quote }}
+##     - |
+##       apiVersion: apps/v1
+##       kind: Deployment
+##       metadata:
+##         name: {{ include "airflow.fullname" . }}-busybox
+##         labels:
+##           app: {{ include "airflow.labels.app" . }}
+##           component: busybox
+##           chart: {{ include "airflow.labels.chart" . }}
+##           release: {{ .Release.Name }}
+##           heritage: {{ .Release.Service }}
+##       spec:
+##         replicas: 1
+##         selector:
+##           matchLabels:
+##             app: {{ include "airflow.labels.app" . }}
+##             component: busybox
+##             release: {{ .Release.Name }}
+##         template:
+##           metadata:
+##             labels:
+##               app: {{ include "airflow.labels.app" . }}
+##               component: busybox
+##               release: {{ .Release.Name }}
+##           spec:
+##             containers:
+##               - name: busybox
+##                 image: busybox:1.35
+##                 command:
+##                   - "/bin/sh"
+##                   - "-c"
+##                 args:
+##                   - |
+##                     ## to break the infinite loop when we receive SIGTERM
+##                     trap "exit 0" SIGTERM;
+##                     ## keep the container running (so people can `kubectl exec -it` into it)
+##                     while true; do
+##                       echo "I am alive...";
+##                       sleep 30;
+##                     done
 ##
 extraManifests: []
 
@@ -1362,7 +1708,7 @@ pgbouncer:
   ##
   image:
     repository: ghcr.io/airflow-helm/pgbouncer
-    tag: 1.15.0-patch.0
+    tag: 1.18.0-patch.1
     pullPolicy: IfNotPresent
     uid: 1001
     gid: 1001
@@ -1397,7 +1743,7 @@ pgbouncer:
   ##
   securityContext: {}
 
-  ## labels for the pgbouncer Deployment
+  ## Labels for the pgbouncer Deployment
   ##
   labels: {}
 
@@ -1424,6 +1770,12 @@ pgbouncer:
     ##
     enabled: false
 
+    ## the `apiVersion` to use for PodDisruptionBudget resources
+    ## - for Kubernetes 1.21 and later: "policy/v1"
+    ## - for Kubernetes 1.20 and before: "policy/v1beta1"
+    ##
+    apiVersion: policy/v1
+
     ## the maximum unavailable pods/percentage for the pgbouncer Deployment
     ##
     maxUnavailable:
@@ -1438,16 +1790,29 @@ pgbouncer:
     enabled: true
     initialDelaySeconds: 5
     periodSeconds: 30
-    timeoutSeconds: 15
+    timeoutSeconds: 60
     failureThreshold: 3
+
+  ## configs for the pgbouncer Pods' startup probe
+  ##
+  startupProbe:
+    enabled: true
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 15
+    failureThreshold: 30
 
   ## the maximum number of seconds to wait for queries upon pod termination, before force killing
   ##
   terminationGracePeriodSeconds: 120
 
+  ## sets pgbouncer config: `auth_type`
+  ##
+  authType: md5
+
   ## sets pgbouncer config: `max_client_conn`
   ##
-  maxClientConnections: 100
+  maxClientConnections: 1000
 
   ## sets pgbouncer config: `default_pool_size`
   ##
@@ -1525,8 +1890,87 @@ pgbouncer:
 ## DATABASE | Embedded Postgres
 ###################################
 postgresql:
-  enabled: false
+  ## if the `stable/postgresql` chart is used
+  ## - [WARNING] the embedded Postgres is NOT SUITABLE for production deployments of Airflow
+  ## - [WARNING] consider using an external database with `externalDatabase.*`
+  ## - set to `false` if using `externalDatabase.*`
+  ##
+  enabled: true
 
+  ## configs for the postgres container image
+  ##
+  image:
+    registry: ghcr.io
+    repository: airflow-helm/postgresql-bitnami
+    tag: 11.16-patch.0
+    pullPolicy: IfNotPresent
+
+  ## the postgres database to use
+  ##
+  postgresqlDatabase: airflow
+
+  ## the postgres user to create
+  ##
+  postgresqlUsername: postgres
+
+  ## the postgres user's password
+  ##
+  postgresqlPassword: airflow
+
+  ## the name of a pre-created secret containing the postgres password
+  ##
+  existingSecret: ""
+
+  ## the key within `postgresql.existingSecret` containing the password string
+  ##
+  existingSecretKey: "postgresql-password"
+
+  ## configs for the PVC of postgresql
+  ##
+  persistence:
+    ## if postgres will use Persistent Volume Claims to store data
+    ## - [WARNING] if false, data will be LOST as postgres Pods restart
+    ##
+    enabled: true
+
+    ## the name of the StorageClass used by the PVC
+    ##
+    storageClass: ""
+
+    ## the access modes of the PVC
+    ##
+    accessModes:
+      - ReadWriteOnce
+
+    ## the size of PVC to request
+    ##
+    size: 8Gi
+
+  ## configs for the postgres StatefulSet
+  ##
+  master:
+    ## the nodeSelector configs for the postgres Pods
+    ## - docs for nodeSelector:
+    ##   https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+    ##
+    nodeSelector: {}
+
+    ## the affinity configs for the postgres Pods
+    ## - spec for Affinity:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#affinity-v1-core
+    ##
+    affinity: {}
+
+    ## the toleration configs for the postgres Pods
+    ## - spec for Toleration:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#toleration-v1-core
+    ##
+    tolerations: []
+
+    ## annotations for the postgres Pods
+    ##
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
 
 ###################################
 ## DATABASE | External Database
@@ -1539,23 +1983,39 @@ externalDatabase:
 
   ## the host of the external database
   ##
-  host: airflow-postgres.ckutahd7qdon.eu-west-2.rds.amazonaws.com
+  host: localhost
 
   ## the port of the external database
   ##
-  port: 5186
+  port: 5432
 
   ## the database/scheme to use within the external database
   ##
-  database: airflow_db
+  database: airflow
 
-  ## the user of the external database
+  ## the username for the external database
   ##
-  user: icms_airflow_admin
+  user: airflow
+
+  ## the name of a pre-created secret containing the external database user
+  ## - if set, this overrides `externalDatabase.user`
+  ##
+  userSecret: ""
+
+  ## the key within `externalDatabase.userSecret` containing the user string
+  ##
+  userSecretKey: "postgresql-user"
+
+  ## the password for the external database
+  ## - [WARNING] to avoid storing the password in plain-text within your values,
+  ##   create a Kubernetes secret and use `externalDatabase.passwordSecret`
+  ##
+  password: ""
 
   ## the name of a pre-created secret containing the external database password
+  ## - if set, this overrides `externalDatabase.password`
   ##
-  passwordSecret: "airflow-db-auth"
+  passwordSecret: ""
 
   ## the key within `externalDatabase.passwordSecret` containing the password string
   ##
@@ -1573,8 +2033,151 @@ externalDatabase:
 ## DATABASE | Embedded Redis
 ###################################
 redis:
-  enabled: false
+  ## if the `stable/redis` chart is used
+  ## - set to `false` if `airflow.executor` is `KubernetesExecutor`
+  ## - set to `false` if using `externalRedis.*`
+  ##
+  enabled: true
 
+  ## configs for the redis container image
+  ##
+  image:
+    registry: docker.io
+    repository: bitnami/redis
+    tag: 5.0.14-debian-10-r173
+    pullPolicy: IfNotPresent
+
+  ## the redis password
+  ##
+  password: airflow
+
+  ## the name of a pre-created secret containing the redis password
+  ##
+  existingSecret: ""
+
+  ## the key within `redis.existingSecret` containing the password string
+  ##
+  existingSecretPasswordKey: "redis-password"
+
+  ## configs for redis cluster mode
+  ##
+  cluster:
+    ## if redis runs in cluster mode
+    ##
+    enabled: false
+
+    ## the number of redis slaves
+    ##
+    slaveCount: 1
+
+  ## configs for the redis master StatefulSet
+  ##
+  master:
+    ## resource requests/limits for the redis master Pods
+    ## - spec for ResourceRequirements:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#resourcerequirements-v1-core
+    ##
+    resources: {}
+
+    ## the nodeSelector configs for the redis master Pods
+    ## - docs for nodeSelector:
+    ##   https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+    ##
+    nodeSelector: {}
+
+    ## the affinity configs for the redis master Pods
+    ## - spec for Affinity:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#affinity-v1-core
+    ##
+    affinity: {}
+
+    ## the toleration configs for the redis master Pods
+    ## - spec for Toleration:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#toleration-v1-core
+    ##
+    tolerations: []
+
+    ## annotations for the redis master Pods
+    ##
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+
+    ## configs for the PVC of the redis master Pods
+    ##
+    persistence:
+      ## use a PVC to persist data
+      ##
+      enabled: false
+
+      ## the name of the StorageClass used by the PVC
+      ##
+      storageClass: ""
+
+      ## the access mode of the PVC
+      ##
+      accessModes:
+      - ReadWriteOnce
+
+      ## the size of PVC to request
+      ##
+      size: 8Gi
+
+  ## configs for the redis slave StatefulSet
+  ## - only used if `redis.cluster.enabled` is `true`
+  ##
+  slave:
+    ## resource requests/limits for the slave Pods
+    ## - spec for ResourceRequirements:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#resourcerequirements-v1-core
+    ##
+    resources: {}
+
+    ## the nodeSelector configs for the redis slave Pods
+    ## - docs for nodeSelector:
+    ##   https://kubernetes.io/docs/concepts/scheduling-eviction/assign-pod-node/#nodeselector
+    ##
+    nodeSelector: {}
+
+    ## the affinity configs for the redis slave Pods
+    ## - spec for Affinity:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#affinity-v1-core
+    ##
+    affinity: {}
+
+    ## the toleration configs for the redis slave Pods
+    ## - spec for Toleration:
+    ##   https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.20/#toleration-v1-core
+    ##
+    tolerations: []
+
+    ## annotations for the slave Pods
+    ##
+    podAnnotations:
+      cluster-autoscaler.kubernetes.io/safe-to-evict: "true"
+
+    ## configs for the PVC of the redis slave Pods
+    ##
+    persistence:
+      ## use a PVC to persist data
+      ##
+      enabled: false
+
+      ## the name of the StorageClass used by the PVC
+      ##
+      storageClass: ""
+
+      ## the access mode of the PVC
+      ##
+      accessModes:
+        - ReadWriteOnce
+
+      ## the size of PVC to request
+      ##
+      size: 8Gi
+
+###################################
+## DATABASE | External Redis
+###################################
 externalRedis:
   ## the host of the external redis
   ##
@@ -1584,11 +2187,18 @@ externalRedis:
   ##
   port: 6379
 
-  ## the database number to use within the the external redis
+  ## the database number to use within the external redis
   ##
   databaseNumber: 1
 
+  ## the password for the external redis
+  ## - [WARNING] to avoid storing the password in plain-text within your values,
+  ##   create a Kubernetes secret and use `externalRedis.passwordSecret`
+  ##
+  password: ""
+
   ## the name of a pre-created secret containing the external redis password
+  ## - if set, this overrides `externalRedis.password`
   ##
   passwordSecret: ""
 
