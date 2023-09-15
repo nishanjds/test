@@ -1551,7 +1551,7 @@ externalDatabase:
 
   ## the user of the external database
   ##
-  user: airflow_admin
+  user: icms_airflow_admin
 
   ## the name of a pre-created secret containing the external database password
   ##
