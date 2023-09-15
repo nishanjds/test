@@ -20,7 +20,7 @@ airflow:
   ## - allowed values: "CeleryExecutor", "KubernetesExecutor", "CeleryKubernetesExecutor"
   ## - customize the "KubernetesExecutor" pod-template with `airflow.kubernetesPodTemplate.*`
   ##
-  executor: CeleryExecutor
+  executor: KubernetesExecutor
 
   ## the fernet encryption key (sets `AIRFLOW__CORE__FERNET_KEY`)
   ## - [WARNING] you must change this value to ensure the security of your airflow
@@ -1895,7 +1895,7 @@ postgresql:
   ## - [WARNING] consider using an external database with `externalDatabase.*`
   ## - set to `false` if using `externalDatabase.*`
   ##
-  enabled: true
+  enabled: false
 
   ## configs for the postgres container image
   ##
@@ -1983,39 +1983,39 @@ externalDatabase:
 
   ## the host of the external database
   ##
-  host: localhost
+  host: airflow-postgres.ckutahd7qdon.eu-west-2.rds.amazonaws.com
 
   ## the port of the external database
   ##
-  port: 5432
+  port: 5186
 
   ## the database/scheme to use within the external database
   ##
-  database: airflow
+  database: airflow_db
 
   ## the username for the external database
   ##
-  user: airflow
+  user: icms_airflow_admin
 
   ## the name of a pre-created secret containing the external database user
   ## - if set, this overrides `externalDatabase.user`
   ##
-  userSecret: ""
+  ## userSecret: "airflow-db-auth"
 
   ## the key within `externalDatabase.userSecret` containing the user string
   ##
-  userSecretKey: "postgresql-user"
+  ## userSecretKey: "postgresql-user"
 
   ## the password for the external database
   ## - [WARNING] to avoid storing the password in plain-text within your values,
   ##   create a Kubernetes secret and use `externalDatabase.passwordSecret`
   ##
-  password: ""
+  ## password: ""
 
   ## the name of a pre-created secret containing the external database password
   ## - if set, this overrides `externalDatabase.password`
   ##
-  passwordSecret: ""
+  passwordSecret: "airflow-db-auth"
 
   ## the key within `externalDatabase.passwordSecret` containing the password string
   ##
@@ -2037,7 +2037,7 @@ redis:
   ## - set to `false` if `airflow.executor` is `KubernetesExecutor`
   ## - set to `false` if using `externalRedis.*`
   ##
-  enabled: true
+  enabled: false
 
   ## configs for the redis container image
   ##
